@@ -14,60 +14,36 @@ use Flarum\Frontend\FrontendHandler;
 use Flarum\Http\UrlGenerator;
 use Flarum\Foundation\Config;
 
-
 class AddSchemaToHeader
 {
-    /**
-     * @var SettingsRepositoryInterface
-     */
     protected $settings;
-
-    /**
-     * @var DiscussionRepository
-     */
-    protected $discussions; // <-- Declare the property here
-
+    protected $discussions;
     protected $url;
     protected $config;
 
-    /**
-     * Constructor.
-     *
-     * @param SettingsRepositoryInterface $settings
-     * @param DiscussionRepository $discussions
-     */
     public function __construct(
         SettingsRepositoryInterface $settings,
         DiscussionRepository $discussions,
-        UrlGenerator $url, // Correctly inject the URL Generator
-        Config $config // Inject Config
+        UrlGenerator $url,
+        Config $config
     ) {
         $this->settings = $settings;
         $this->discussions = $discussions;
-        $this->url = $url; // Assign it
-        $this->config = $config; // Assign config
+        $this->url = $url;
+        $this->config = $config;
     }
 
-    
-
-    /**
-     * Handle the rendering of the document.
-     *
-     * @param Document $document
-     */
     public function __invoke(Document $document)
     {
-        // Retrieve dynamic settings
-        $siteName = $this->settings->get('forum_title', ''); // empty not set
-        $siteUrl = $this->config['url']; // Fetch URL from config.php
-        $logoUrl = $this->settings->get('logo_path', $siteUrl.'/logo/logo-schema.png'); 
+        $siteName = $this->settings->get('forum_title', '');
+        $siteUrl = $this->config['url'];
+        $logoUrl = $this->settings->get('logo_path', $siteUrl.'/logo/logo-schema.png');
 
         if(empty(($logoUrl)))
         {
             $logoUrl = $siteUrl.'/logo/logo-schema.png';
         }
 
-        // Base schema for the website
         $schema = [
             "@context" => "https://schema.org",
             "@type" => "WebSite",
@@ -88,67 +64,76 @@ class AddSchemaToHeader
             ]
         ];
 
-      // If viewing a discussion thread
-      try {
-  
-      
-          if (strpos($_SERVER['REQUEST_URI'], '/d/') !== false) {
-
+        try {
+            if (strpos($_SERVER['REQUEST_URI'], '/d/') !== false) {
                 preg_match('/\/d\/(\d+)/', $_SERVER['REQUEST_URI'], $matches);
                 $discussionId = $matches[1] ?? null;
-      
-                 // Fetch the discussion from the repository
-                 $discussion = $this->discussions->findOrFail($discussionId);
-      
-              
-                // Ensure the first post exists
+
+                $discussion = $this->discussions->findOrFail($discussionId);
                 $firstPost = $discussion->firstPost;
                 if (!$firstPost) {
-                    throw new \Exception('First post not found'); // Log and exit if no first post
+                    throw new \Exception('First post not found');
                 }
-            
-                // Ensure the author exists
                 $author = $firstPost->user;
                 if (!$author) {
-                    throw new \Exception('Author not found'); // Log and exit if no author
+                    throw new \Exception('Author not found');
                 }
-            
-                // Extract attributes
                 $title = $discussion->title;
                 $slug = $discussion->slug;
-
-                // fuklfix 
                 $dURL = $siteUrl."/d/$discussionId-$slug";
-
                 $createdAt = $discussion->created_at ? $discussion->created_at->toIso8601String() : '';
                 $updatedAt = $discussion->last_posted_at ? $discussion->last_posted_at->toIso8601String() : '';
-                
-            
-                // Interaction statistics
-              //  $viewCount = $discussion->attributes['view_count'] ?? 0;
-                $commentCount = $discussion->comment_count ?? 0;
-                $likeCount = method_exists($discussion, 'likes') ? $discussion->likes()->count() : 0; // Use relationship if defined
+                $commentCount = max(($discussion->comment_count - 1), 0);
+                $likeCount = method_exists($discussion, 'likes') ? $discussion->likes()->count() : 0;
+                $content = $firstPost->content ?? ''; 
 
-            
-                // Handle tags safely
-                // $tags = $discussion->tags ?? collect();
-                // $tagNames = $tags->pluck('name')->toArray();
+                $comments = [];
+                $isFirst = true;
+                $postCount = 0;
+                foreach ($discussion->posts as $post) {
+                    if ($isFirst) {
+                        $isFirst = false;
+                        continue;
+                    }
+                    if ($postCount >= 100) {
+                        break;
+                    }
+                    $commentContent = $this->stripHtml($post->content);
+                    if(empty($commentContent))
+                    {
+                        continue;
+                    }
 
-                // Safely fetch article body content
-                $content = $firstPost->content ?? '';             
-            
+                    $postCount++;
+                    $commentAuthor = $post->user;
+                //    $commentUrl = $siteUrl . '/p/' . $post->id;
+                    $comments[] = [
+                        "@type" => "Comment",
+//                        "@id" => $commentUrl,
+//                        "url" => $commentUrl,
+                        "text" => $commentContent,
+                        "dateCreated" => $post->created_at->toIso8601String(),
+                        "author" => [
+                            "@type" => "Person",
+                            "name" => $commentAuthor ? $commentAuthor->username : 'Anonymous',
+                            "url" => $this->url->to('forum')->route('user', ['username' => $commentAuthor->username])
+                        ]
+                    ];
+
+                    $commentContent = null;
+                }
+
                 $schema['mainEntity'] = [
                     "@type" => "DiscussionForumPosting",
                     "headline" => $title,
+                    "articleBody" => $this->stripHtml($content),
                     "datePublished" => $createdAt,
                     "dateModified" => $updatedAt,
                     "url" => $dURL,
-
-                    // "articleSection" => $tagNames,
                     "author" => [
                         "@type" => "Person",
                         "name" => $author->username,
-                       "url" => $this->url->to('forum')->route('user', ['username' => $author->username])
+                        "url" => $this->url->to('forum')->route('user', ['username' => $author->username])
                     ],
                     "publisher" => [
                         "@type" => "Organization",
@@ -158,7 +143,7 @@ class AddSchemaToHeader
                             "url" => $logoUrl
                         ]
                     ],
-                  "interactionStatistic" => [
+                    "interactionStatistic" => [
                         [
                             "@type" => "InteractionCounter",
                             "interactionType" => "https://schema.org/CommentAction",
@@ -170,58 +155,10 @@ class AddSchemaToHeader
                             "userInteractionCount" => $likeCount
                         ] 
                     ],
-                    "articleBody" => $this->stripHtml($content)
+                    "comment" => $comments
                 ];
-            
- /*               // Breadcrumbs
-                $breadcrumbs = [];
-                $position = 1;
-            
-                // Add home breadcrumb
-                $breadcrumbs[] = [
-                    "@type" => "ListItem",
-                    "position" => $position,
-                    "item" => [
-                        "@type" => "Thing",
-                        "name" => "Home",
-                        "url" => $siteUrl
-                    ]
-                ];
-                $position++;
-            
-                // Add tags as breadcrumbs
-                if ($tags) {
-                    foreach ($tags as $tag) {
-                        $breadcrumbs[] = [
-                            "@type" => "ListItem",
-                            "position" => $position,
-                            "item" => [
-                                "@type" => "Thing",
-                                "name" => $tag->name,
-                                "url" => $tag->url()
-                            ]
-                        ];
-                        $position++;
-                    }
-                }
-            
-                // Add the discussion title as the last breadcrumb
-                $breadcrumbs[] = [
-                    "@type" => "ListItem",
-                    "position" => $position,
-                    "item" => [
-                        "@type" => "Thing",
-                        "name" => $title,
-                        "url" => url("/d/{$discussion->id}-" . Str::slug($title))
-                    ]
-                ];
-            
-                $schema['breadcrumb'] = [
-                    "@type" => "BreadcrumbList",
-                    "itemListElement" => $breadcrumbs
-                ];
-                */
-          }
+            }
+
       } catch (\Exception $e) {
          error_log('Schema Error: ' . $e->getMessage());
           return; // Avoid crashing the page
@@ -250,6 +187,6 @@ class AddSchemaToHeader
     
         protected function stripHtml($html)
         {
-            return strip_tags($html ?? '');
+            return strip_tags(is_array($html) ? '' : $html);
         }
     }
