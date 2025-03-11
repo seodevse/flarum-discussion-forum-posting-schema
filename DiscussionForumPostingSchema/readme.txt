@@ -1,1 +1,1 @@
-composer require seodevse/flarum-discussion-forum-posting-schema:@dev
+composer require seodevse/flarum-discussion-forum-posting-schema
